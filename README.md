@@ -1,5 +1,5 @@
-
-# Anno Bot "Sned" v3.0.0
+# Anno Bot "Sned" v3.2.0 EXPERIMENTAL
+#### Note: Experimental builds use the `?` prefix instead of `!`.
 
 ## A Discord bot made with [discord.py](https://github.com/Rapptz/discord.py)  for matchmaking and other purposes on the Annoverse discord guild.
 
@@ -8,6 +8,7 @@
  - Allow users to add themselves to these listings and express join intent
  - Easy to use commands
  - Setup commands to simplify configuration
+ - Customizable localization
 
 ### Commands:
 `!help` Displays all commands a user has permission to execute. Alternatively, use `!help <command>` to get more information about a specific command.
@@ -31,7 +32,7 @@
 
 `!priviligedroles` Lists all priviliged roles. Can only be executed by a guild owner.
 
-`!setup <setuptype>` Initialize a setup, for configuring the server. Example: `!setup LFG` will start a setup helping you set up reaction roles. Requires priviliged access. Current setups: `LFG, matchmaking, keepontop`
+`!setup <setuptype>` Initialize a setup, for configuring the server. Example: `!setup LFG` will start a setup helping you set up reaction roles. Requires priviliged access. Current setups: `LFG, matchmaking, keepontop, logging`
 
 `!settings` Displays all settings for the current guild. Requires priviliged access.
 
@@ -42,6 +43,8 @@
 `!deltag <name>` Deletes a tag of the specified name. Requires priviliged access.
 
 `!modify <datatype> <value>` Modifies a datatype in settings to a new value. Improper use will break things, use setups if you don't know what you're doing! Requires priviliged access.
+
+`!warn <user> [reason]` Warns a user, and sends warn to logging channel if set up. Will not function if `LOGCHANNEL` is not set.
 
 `!quack` ???
 ### How to use:
