@@ -1,7 +1,9 @@
-import discord
-from discord.ext import commands
 import asyncio
 import logging
+
+import discord
+from discord.ext import commands
+
 
 async def hasOwner(ctx):
     return ctx.author.id == ctx.bot.owner_id or ctx.author.id == ctx.guild.owner_id
@@ -25,7 +27,7 @@ class Setup(commands.Cog):
     #It basically just collects a bunch of values from the user, in this case an admin, and then changes the settings
     #based on that, instead of the admin having to use !modify for every single value
     #TL;DR: fancy setup thing
-    @commands.command(hidden=True,brief="Starts bot configuration setups.", description = "Used to set up and configure different parts of the bot. Valid setup-types: `matchmaking, LFG, keepontop, logging` Only usable by priviliged users.", usage="setup <setuptype>")
+    @commands.command(help="Starts bot configuration setups.", description = "Used to set up and configure different parts of the bot. \nValid setup-types: `matchmaking, LFG, keepontop, logging`", usage="setup <setuptype>")
     @commands.check(hasPriviliged)
     @commands.guild_only()
     @commands.max_concurrency(1, per=commands.BucketType.guild,wait=False)
@@ -180,7 +182,7 @@ class Setup(commands.Cog):
                 await ctx.channel.send(embed=embed)
                 return
         #This setup will set up the !matchmaking command to work properly.
-        if setuptype.lower() == "matchmaking":
+        elif setuptype.lower() == "matchmaking":
             extensions = self.bot.checkExtensions
             if "Matchmaking" not in extensions :
                 embed=discord.Embed(title=self.bot.errorMissingModuleTitle, description="This setup requires the module `matchmaking` to be active.", color=self.bot.errorColor)
@@ -262,6 +264,11 @@ class Setup(commands.Cog):
                 return
         
         elif setuptype.lower() == "logging" or setuptype.lower() == "logs" :
+            extensions = self.bot.checkExtensions
+            if "Logging" not in extensions:
+                embed=discord.Embed(title=self.bot.errorMissingModuleTitle, description="This setup requires the module `userlog` to be active.", color=self.bot.errorColor)
+                await ctx.channel.send(embed=embed)
+                return
             embed=discord.Embed(title="🛠️ Logging Setup", description="Specify the channel where you want to send logs to by mentioning it!\n**Note:**This channel may contain sensitive information, do not let everyone access it!", color=self.bot.embedBlue)
             await ctx.channel.send(embed=embed)
             try :
@@ -269,9 +276,22 @@ class Setup(commands.Cog):
                     return payload.author == ctx.author and payload.channel.id == ctx.channel.id
                 payload = await self.bot.wait_for('message', timeout=60.0, check=check)
                 loggingChannel = await commands.TextChannelConverter().convert(ctx, payload.content)
-                embed=discord.Embed(title="🛠️ Logging Setup", description=f"Channel set to {loggingChannel.mention}!", color=self.bot.embedBlue)
+                embed=discord.Embed(title="🛠️ Logging Setup", description=f"Logging channel set to {loggingChannel.mention}!", color=self.bot.embedBlue)
                 await ctx.channel.send(embed=embed)
+                embed=discord.Embed(title="🛠️ Logging Setup", description=f"Now you can *optionally* specify an **elevated** logging channel, where more important entries, such as bans or server setting updates will be sent to. Type `skip` to skip this step.", color=self.bot.embedBlue)
+                await ctx.channel.send(embed=embed)
+                payload = await self.bot.wait_for('message', timeout=60.0, check=check)
+                if payload.content != "skip":
+                    elevated_loggingChannel = await commands.TextChannelConverter().convert(ctx, payload.content)
+                    elevated_loggingChannelID = elevated_loggingChannel.id
+                    embed=discord.Embed(title="🛠️ Logging Setup", description=f"Elevated logging channel set to {elevated_loggingChannel.mention}!", color=self.bot.embedBlue)
+                    await ctx.send(embed=embed)
+                else:
+                    elevated_loggingChannelID = 0
+                    embed=discord.Embed(title="🛠️ Logging Setup", description=f"No elevated logging channel set.", color=self.bot.embedBlue)
+                    await ctx.send(embed=embed)
                 await self.bot.DBHandler.modifysettings("LOGCHANNEL", loggingChannel.id, ctx.guild.id)
+                await self.bot.DBHandler.modifysettings("ELEVATED_LOGCHANNEL", elevated_loggingChannelID, ctx.guild.id)
                 embed=discord.Embed(title="🛠️ Logging Setup", description=f"✅ Setup completed. Logs will now be recorded!", color=self.bot.embedGreen)
                 await ctx.channel.send(embed=embed)
                 return
@@ -284,7 +304,8 @@ class Setup(commands.Cog):
                 await ctx.channel.send(embed=embed)
                 return
         else:
-            await ctx.channel.send("**Error:** Unable to find requested setup process. Valid setups: `LFG, matchmaking`.")
+            embed=discord.Embed(title="❌ Error: Unknown setup process", description="Unable to find requested setup process. Valid setups: `LFG, matchmaking, keepontop, logging`", color=self.bot.errorColor)
+            await ctx.send(embed=embed)
             return
 
     @setup.error

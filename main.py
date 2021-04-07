@@ -22,7 +22,7 @@ lang = "en"
 #Is this build experimental?
 experimentalBuild = True
 #Version of the bot
-currentVersion = "3.2.0"
+currentVersion = "3.4.0a"
 #Loading token from .env file. If this file does not exist, nothing will work.
 load_dotenv()
 #Get token from .env
@@ -41,7 +41,7 @@ else :
 #This is just my user ID, used for setting up who can & cant use priviliged commands along with a server owner.
 creatorID = 163979124820541440
 #Can modify command prefix & intents here (and probably a lot of other cool stuff I am not aware of)
-bot = commands.Bot(command_prefix=prefix, intents= discord.Intents.all(), owner_id=creatorID, case_insensitive=True, help_command=None, activity=activity)
+bot = commands.Bot(command_prefix=prefix, intents= discord.Intents.all(), owner_id=creatorID, case_insensitive=True, help_command=None, activity=activity, max_messages=20000)
 
 #General global bot settings
 
@@ -60,10 +60,12 @@ elif lang == "en":
 #Fallback to english
 else :
     logging.error("Invalid language, fallback to English.")
+    lang = "en"
     _ = gettext.gettext
 
 
 #No touch, handled in runtime by extensions
+bot.BASE_DIR = BASE_DIR
 bot.currentVersion = currentVersion
 bot.prefix = prefix
 bot.lang = lang
@@ -75,10 +77,12 @@ bot.recentlyEdited = []
 #All extensions that are loaded on boot-up, change these to alter what modules you want (Note: These refer to filenames NOT cognames)
 #Note: Without the extension admin_commands, most things will break, so I consider this a must-have. Remove at your own peril.
 #Jishaku is a bot-owner only debug extension, requires 'pip install jishaku'.
-initial_extensions = ['extensions.admin_commands', 'extensions.misc_commands', 'extensions.matchmaking', 'extensions.tags', 'extensions.setup', 'extensions.userlog', 'jishaku']
+initial_extensions = ['extensions.admin_commands', 'extensions.misc_commands', 'extensions.matchmaking', 'extensions.tags', 'extensions.setup', 'extensions.userlog', 'extensions.moderation', 'jishaku']
 #Contains all the valid datatypes in settings. If you add a new one here, it will be automatically generated
 #upon a new request to retrieve/modify that datatype.
-bot.datatypes = ["COMMANDSCHANNEL", "LOGCHANNEL", "ANNOUNCECHANNEL", "ROLEREACTMSG", "LFGROLE", "LFGREACTIONEMOJI", "KEEP_ON_TOP_CHANNEL", "KEEP_ON_TOP_MSG"]
+bot.datatypes = ["LOGCHANNEL", "ELEVATED_LOGCHANNEL",   #Used in module userlog
+"COMMANDSCHANNEL", "ANNOUNCECHANNEL", "ROLEREACTMSG", "LFGROLE", "LFGREACTIONEMOJI",   #Used in module matchmaking
+"KEEP_ON_TOP_CHANNEL", "KEEP_ON_TOP_MSG"]   #Used in module matchmaking & in main
 #These text names are reserved and used for internal functions, other ones may get created by users for tags.
 bot.reservedTextNames = ["KEEP_ON_TOP_CONTENT"]
 #
@@ -101,6 +105,8 @@ bot.errorCheckFailDesc = _("Type `{prefix}help` for a list of available commands
 bot.errorCooldownTitle = "🕘 " + _("Error: This command is on cooldown.")
 bot.errorMissingModuleTitle = "❌ " + _("Error: Missing module.")
 bot.errorMissingModuleDesc = _("This operation is missing a module.")
+bot.errorMaxConcurrencyReachedTitle = "❌ " + _("Error: Max concurrency reached!")
+bot.errorMaxConcurrencyReachedDesc= _("You have reached the maximum amount of instances for this command.")
 #Warns:
 bot.warnColor = 0xffcc4d
 bot.warnDataTitle = "⚠️ " + _("Warning: Invalid data entered.")
@@ -113,7 +119,7 @@ bot.requestFooter = _("Requested by {user_name}#{discrim}")
 bot.unknownCMDstr = "❓ " + _("Unknown command!")
 #Misc:
 bot.embedBlue = 0x009dff
-bot.embedGreen = 0x00ff2a
+bot.embedGreen = 0x77b255
 bot.unknownColor = 0xbe1931
 bot.miscColor = 0xc2c2c2
 
@@ -151,17 +157,19 @@ async def on_ready():
 #
 #DBHandler
 #
-#All functions relating to adding, updating, inserting, or removing from any table in the database
+#All helper functions relating to adding, updating, inserting, or removing from any table in the database
 class DBhandler():
-    #Deletes a guild specific settings file.
-    async def deletesettings(self, guildID):
-        #Delete all data relating to this guild.
+    #Deletes all data related to a specific guild, including but not limited to: all settings, priviliged roles, stored tags, stored multiplayer listings etc...
+    #Warning! This also erases any stored warnings & other moderation actions for the guild
+    async def deletedata(self, guildID):
+        #The nuclear option
         async with aiosqlite.connect(bot.dbPath) as db:
             await db.execute("DELETE FROM settings WHERE guild_id = ?", [guildID])
             await db.execute("DELETE FROM priviliged WHERE guild_id = ?", [guildID])
             await db.execute("DELETE FROM stored_text WHERE guild_id = ?", [guildID])
+            await db.execute("DELETE FROM match_listings WHERE guild_id = ?", [guildID])
+            await db.execute("DELETE FROM users WHERE guild_id = ?", [guildID])
             await db.commit()
-            #os.remove(f"{guildID}_settings.cfg")
             logging.warning(f"Settings have been reset and tags erased for guild {guildID}.")
 
     #Returns the priviliged roles for a specific guild as a list.
@@ -269,7 +277,6 @@ class DBhandler():
                 #This gets datapairs in a tuple, print it below if you want to see how it looks
                 cursor = await db.execute("SELECT datatype, value FROM settings WHERE guild_id = ?", [guildID])
                 dbSettings = await cursor.fetchall()
-                #print(dbSettings)
                 #The array we will return to send in the message
                 settings = []
                 #Now we just combine them.
@@ -396,91 +403,135 @@ class DBhandler():
                 "guild_id": guild_id
             }
             return listings
+    
+    async def createUser(self, userID, guildID, flags=None, warns=0, is_muted=0, notes=None): #Creates an empty user, or you can specify attributes (but you should not)
+        async with aiosqlite.connect(bot.dbPath) as db:
+            await db.execute("INSERT INTO users (user_id, flags, warns, is_muted, notes, guild_id) VALUES (?, ?, ?, ?, ?, ?)", [userID, flags, warns, is_muted, notes, guildID])
+            await db.commit()
+
+
+    async def getUser(self, userID, guildID): #Gets a single user from the db
+        async with aiosqlite.connect(bot.dbPath) as db:
+            cursor = await db.execute("SELECT * FROM users WHERE user_id = ? AND guild_id = ?", [userID, guildID])
+            result = await cursor.fetchone()
+            if result:
+                user = {
+                    "user_id": result[0],
+                    "flags": result[1],
+                    "warns": result[2],
+                    "is_muted": result[3],
+                    "notes": result[4],
+                    "guild_id": result[5]
+                }
+                return user
+            else:
+                await self.createUser(userID, guildID) #If the user does not exist, we create an empty entry for them, then repeat the get request
+                await self.getUser(userID, guildID) #Recursion yay (I am immature)
+    
+    async def getAllGuildUsers(self, guildID):
+        async with aiosqlite.connect(bot.dbPath) as db:
+            cursor = await db.execute("SELECT * FROM users WHERE guild_id = ?", [guildID])
+            results = await cursor.fetchall()
+            if results:
+                userID, flags, warns, is_muted, notes, guild_id = ([] for i in range(6))
+                for result in results:
+                    userID.append(result[0])
+                    flags.append(result[1])
+                    warns.append(result[2])
+                    is_muted.append(result[3])
+                    notes.append(result[4])
+                    guild_id.append(result[5])
+                users = {
+                    "user_id": userID,
+                    "flags": flags,
+                    "warns": warns,
+                    "is_muted": is_muted,
+                    "notes": notes,
+                    "guild_id": guild_id
+                }
+                return users
+    
+    async def updateUser(self, userID, field, value, guildID): #Update a user's specific attribute
+        async with aiosqlite.connect(bot.dbPath) as db:
+            valid_fields=["flags", "warns", "is_muted", "notes"] #This should prevent SQL Injection, and accidental data writes/errors
+            if field not in valid_fields:
+                logging.critical(f"DBHandler.updateUser referenced invalid field: {field}")
+                return
+            if await self.getUser(userID, guildID):
+                await db.execute(f"UPDATE users SET {field} = ? WHERE user_id = ? AND guild_id = ?", [value, userID, guildID])
+                await db.commit()
+            else:
+                self.createUser(userID, guildID) #Create the user
+                await db.execute(f"UPDATE users SET {field} = ? WHERE user_id = ? AND guild_id = ?", [value, userID, guildID])
+                await db.commit()
+
 
 
 #The main instance of DBHandler
 bot.DBHandler = DBhandler()
 
+#The custom help command subclassing the dpy one. See the docs or this guide (https://gist.github.com/InterStella0/b78488fb28cadf279dfd3164b9f0cf96) on how this was made.
+class SnedHelp(commands.HelpCommand):
+    #Method to get information about a command to display in send_bot_help
+    def get_command_signature(self, command):
+        return '`{prefix}{command}` - {commandbrief}'.format(prefix=self.clean_prefix, command=command.name, commandbrief=command.short_doc) #short_doc goes to brief first, otherwise gets first line of help
     
-#Custom help command, shows all commands a user can execute based on their priviliges.
-#Also has an alternate mode where it shows information about a specific command, if specified as an argument.
-@bot.command(brief=_("Displays this help message."), description=_("Displays all available commands you can execute, based on your permission level."), usage=f"{prefix}help [command]")
-async def help(ctx, commandname : str=None):
-    #This uses a custom instance of dbHandler
-    dbHandler = DBhandler()
-    #Retrieve all commands except hidden, unless user is priviliged.
-    
-    #Direct copy of hasPriviliged()
-    #If user is priviliged, get all commands, including hidden ones, otherwise just the not hidden ones.
+    #Send generic help message with all commands included
+    async def send_bot_help(self, mapping):
+        ctx = self.context   #Obtaining ctx
+        help_embed = discord.Embed(title="⚙️ " + _("__Available commands:__"), description=_("You can also use `{prefix}help <command>` to get more information about a specific command.").format(prefix=self.clean_prefix), color=bot.embedBlue)
+        #We retrieve all the commands from the mapping of cog,commands
+        for cog, commands in mapping.items(): 
+            filtered = await self.filter_commands(commands, sort=True)   #This will filter commands to those the user can actually execute
+            command_signatures = [self.get_command_signature(command) for command in filtered]   #Get command signature in format as specified above
+            #If we have any, put them in categories according to cogs, fallback is "Other"
+            if command_signatures:
+                cog_name = getattr(cog, "qualified_name", "Other")
+                help_embed.add_field(name=cog_name, value="\n".join(command_signatures), inline=False)
+            #Put fancy footer on it
+            help_embed.set_footer(text=bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator), icon_url=ctx.author.avatar_url)
+        channel=self.get_destination() #Print it out
+        await channel.send(embed=help_embed)
 
-    #Note: checkprivs() returns a list of tuples as roleIDs
-    userRoles = [role.id for role in ctx.author.roles]
-    privroles = await dbHandler.checkprivs(ctx.guild.id)
-    
-    #Determine how many commands and associated details we need to retrieve, then retrieve them.
-    if any(roleID in userRoles for roleID in privroles) or (ctx.author.id == bot.owner_id or ctx.author.id == ctx.guild.owner_id) :
-        cmds = [cmd.name for cmd in bot.commands]
-        briefs = [cmd.brief for cmd in bot.commands]
-        allAliases = [cmd.aliases for cmd in bot.commands]
-    else :
-        cmds = [cmd.name for cmd in bot.commands if not cmd.hidden]
-        briefs = [cmd.brief for cmd in bot.commands if not cmd.hidden]
-        allAliases = [cmd.aliases for cmd in bot.commands if not cmd.hidden]
-    i = 0
-    #Note: allAliases is a matrix of multiple lists, this will convert it into a singular list
-    aliases = list(chain(*allAliases))
-    #helpFooter=f"Requested by {ctx.author.name}#{ctx.author.discriminator}"
-    helpFooter=bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator)
-    if commandname == None :
-        formattedmsg = []
-        i = 0
-        detailtip=_("You can also use `{prefix}help <command>` to get more information about a specific command.").format(prefix=prefix)
-        formattedmsg.append(detailtip + "\n\n")
-        for i in range(len(cmds)) :
-            if briefs[i] != None :
-                formattedmsg.append(f"`{prefix}{cmds[i]}` - {briefs[i]} \n")
-            else :
-                formattedmsg.append(f"`{prefix}{cmds[i]}` \n")
+    async def send_command_help(self, command):
+        ctx = self.context   #Obtaining ctx
+        detail_embed=discord.Embed(title="⚙️ " + _("Command: {prefix}{command}").format(prefix=self.clean_prefix, command=command.name), color=bot.embedBlue)
+        if command.description:
+            detail_embed.add_field(name=_("Description:"), value=command.description)  #Getting command description
+        elif command.help:
+            detail_embed.add_field(name=_("Description:"), value=command.help)  #Fallback to help attribute if description does not exist
+        if command.usage:
+            detail_embed.add_field(name=_("Usage:"), value=f"`{self.clean_prefix}{command.usage}`", inline=False) #Getting command usage & formatting it
+        aliases = []
+        for alias in command.aliases:
+            aliases.append(f"`{self.clean_prefix}{alias}`")  #Adding some custom formatting to each alias
+        if aliases:
+            detail_embed.add_field(name=_("Aliases:"), value=", ".join(aliases), inline=False)   #If any aliases exist, we add those to the embed in new field
+        detail_embed.set_footer(text=bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator), icon_url=ctx.author.avatar_url)
+        channel = self.get_destination()   #Send it to destination
+        await channel.send(embed=detail_embed)
 
-        final = "".join(formattedmsg)
-        embed=discord.Embed(title="⚙️" + _("__Available commands:__"), description=final, color=bot.embedBlue)
-        embed.set_footer(text=helpFooter, icon_url=ctx.author.avatar_url)
-        await ctx.send(embed=embed)
-        return
-    else :
-        #Oh no, you found me o_o
-        if commandname == "Hyper" :
-            embed=discord.Embed(title="❓ I can't...", description=f"I am sorry, but he can't be helped. He is beyond redemption.", color=bot.unknownColor)
-            embed.set_footer(text="Requested by a stinky person.", icon_url=ctx.author.avatar_url)
-            await ctx.send(embed=embed)
-            return
-        #If our user is a dumbass and types ?help ?command instead of ?help command, we will remove the prefix from it first
-        if commandname.startswith(prefix) :
-            #Remove first character
-            commandname = commandname[0 : 0 : ] + commandname[0 + 1 : :]
-        #If found, we will try to retrieve detailed command information about it, and provide it to the user.
-        if commandname in cmds or commandname in aliases :
-            command = bot.get_command(commandname)
-            if len(command.aliases) > 0 :
-                #Add the prefix to the aliases before displaying
-                commandaliases = ["`" + prefix + alias + "`" for alias in command.aliases]
-                #Then join them together
-                commandaliases = ", ".join(commandaliases)
-                embed=discord.Embed(title="⚙️" + _("Command: {prefix}{command_name}").format(prefix=prefix, command_name=command.name), description=_("{command_desc} \n \n**Usage:** `{prefix}{command_usage}` \n**Aliases:** {command_aliases}").format(command_desc=command.description, prefix=prefix, command_usage=command.usage, command_aliases=commandaliases), color=bot.embedBlue)
-                embed.set_footer(text=helpFooter, icon_url=ctx.author.avatar_url)
-                await ctx.send(embed=embed)
-                return
-            else :
-                command = bot.get_command(commandname)
-                embed=discord.Embed(title="⚙️" + _("Command: {prefix}{command_name}").format(prefix=prefix, command_name=command.name), description=_("{command_desc} \n \n**Usage:** `{prefix}{command_usage}`").format(command_desc=command.description, prefix=prefix, command_usage=command.usage), color=bot.embedBlue)
-                embed.set_footer(text=helpFooter, icon_url=ctx.author.avatar_url)
-                await ctx.send(embed=embed)
-                return
-        else :
-            embed=discord.Embed(title="❓" + bot.unknownCMDstr, description=_("Use `{prefix}help` for a list of available commands.").format(prefix=prefix), color=bot.unknownColor)
-            embed.set_footer(text=helpFooter, icon_url=ctx.author.avatar_url)
-            await ctx.send(embed=embed)
-            return
+    async def send_cog_help(self, cog):
+        #I chose not to implement help for cogs, but if you want to do something, do it here
+        ctx = self.context
+        embed=discord.Embed(title=bot.unknownCMDstr, description=_("Use `{prefix}help` for a list of available commands.").format(prefix=prefix), color=bot.unknownColor)
+        embed.set_footer(text=bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator), icon_url=ctx.author.avatar_url)
+        channel = self.get_destination()
+        await channel.send(embed=embed)
+
+    async def send_group_help(self, group):
+        await self.send_command_help(group) #I chose not to implement any custom features for groups, they just get command help retrieved
+
+    async def send_error_message(self, error):   #Overriding the default help error message
+        ctx = self.context
+        embed=discord.Embed(title=bot.unknownCMDstr, description=_("Use `{prefix}help` for a list of available commands.").format(prefix=prefix), color=bot.unknownColor)
+        embed.set_footer(text=bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator), icon_url=ctx.author.avatar_url)
+        channel = self.get_destination()
+        await channel.send(embed=embed)
+
+#Assign custom help command to bot
+bot.help_command = SnedHelp()
+
 #
 #
 #Error handler
@@ -531,7 +582,11 @@ async def on_command_error(ctx, error):
         embed.set_footer(text=bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator), icon_url=ctx.author.avatar_url)
         await ctx.send(embed=embed)
         logging.info(f"{ctx.author} tried calling a command ({ctx.message.content}) but did not supply sufficient arguments.")
-
+    #MaxConcurrencyReached error
+    elif isinstance(error, commands.MaxConcurrencyReached):
+            embed = discord.Embed(title=bot.errorMaxConcurrencyReachedTitle, description=bot.errorMaxConcurrencyReachedDesc, color=bot.errorColor)
+            embed.set_footer(text=bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator), icon_url=ctx.author.avatar_url)
+            await ctx.channel.send(embed=embed)
 
     else :
         #If no known error has been passed, we will print the exception to console as usual
@@ -561,7 +616,7 @@ async def on_guild_join(guild):
 @bot.event
 async def on_guild_remove(guild):
     #Erase all settings for this guild on removal to keep the db tidy.
-    await bot.DBHandler.deletesettings(guild.id)
+    await bot.DBHandler.deletedata(guild.id)
     logging.info(f"Bot has been removed from guild {guild.id}, correlating data erased.")
 
 #Keep-On-Top message functionality (Requires setup extension to be properly set up)

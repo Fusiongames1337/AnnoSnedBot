@@ -35,7 +35,7 @@ class Matchmaking(commands.Cog):
     #evaluates the answers based on some criteria, then use those answers to construct a formatted
     #multiplayer listing, which will then in turn go into a preconfigured channel. It will also ping a
     #designated role if set. Can be limited as to which channels it can be run from via the COMMANDSCHANNEL setting.
-    @commands.command(brief="Start setting up a new multiplayer listing.", description="Start matchmaking! After command execution, you will receive a direct message to help you set up a multiplayer listing! Takes no arguments.", aliases=['multiplayer', 'init', 'match','multi','mp'], usage=f"matchmaking")
+    @commands.command(help="Start setting up a new multiplayer listing.", description="Start matchmaking! After command execution, you will receive a direct message to help you set up a multiplayer listing! Takes no arguments.", aliases=['multiplayer', 'init', 'match','multi','mp'], usage=f"matchmaking")
     @commands.guild_only()
     @commands.max_concurrency(1, per=commands.BucketType.user,wait=False)
     @commands.cooldown(1, 72000, type=commands.BucketType.member)
@@ -45,7 +45,8 @@ class Matchmaking(commands.Cog):
         if cmdchannel != 0 :
             if cmdchannel != ctx.channel.id :
                 logging.info(f"User {ctx.author} tried to initialize matchmaking in disabled channel.")
-                return -1
+                self.matchmaking.reset_cooldown(ctx)
+                return
         mpsessiondata = []
         mpEmbedColor = 0xd76b00
         #This should be a list of all the names of the functions below
@@ -98,33 +99,35 @@ class Matchmaking(commands.Cog):
                     await ctx.author.send(embed=embed)
                     return -1
             if qType == "GameMode" :
-                embed=discord.Embed(title=self._("Should this match be a PvP or Co-Op match?"), description="⚔️ - PvP (Player versus Player) \n 🛡️ - Co-Op (Cooperative)", color=mpEmbedColor)
+                embed=discord.Embed(title=self._("Choose your preferred style of play!"), description="⚔️ - PvP (Player versus Player) \n🛡️ - PvE (Players versus Environment)\n⛏️ - Co-Op (Cooperative)", color=mpEmbedColor)
                 embed.set_footer(text=self._("React below with your choice!"))
                 msg = await ctx.author.send(embed=embed)
                 #Add two reactions to this message
-                await msg.add_reaction("⚔️")
-                await msg.add_reaction("🛡️")
+                gamemode_emoji = ["⚔️", "🛡️", "⛏️"]
+                gamemodes = ["PvP", "PvE", "Co-Op"]
+                for emoji in gamemode_emoji:
+                    await msg.add_reaction(emoji) 
 
                 #We check if the message ID is the same, so this is not a different message.
                 #We also check if the user who reacted was the user who sent the command.
-                gameModeEmojies = ["🛡️", "⚔️"]
                 def gamemodecheck(payload):
                     return payload.message_id == msg.id and payload.user_id == ctx.author.id
                 try:
                     payload = await self.bot.wait_for('raw_reaction_add', timeout=300.0, check=gamemodecheck)
-
                     #Check reaction emoji
-                    if str(payload.emoji) == "⚔️":
-                        gamemode = "PvP"
-                        
-                    elif str(payload.emoji) == "🛡️":
-                        gamemode = "Co-Op"
-                    
-                    elif str(payload.emoji) not in gameModeEmojies:
-                        await msg.delete()
-                        embed = discord.Embed(title=self.bot.warnEmojiTitle, description=self.bot.warnEmojiDesc , color=self.bot.warnColor)
-                        await ctx.author.send(embed=embed)
-                        return -2
+                    i = 0
+                    gamemode = "Default"
+                    while i != len(gamemodes):
+                        if str(payload.emoji) not in gamemode_emoji :
+                            await msg.delete()
+                            embed = discord.Embed(title=self.bot.warnEmojiTitle, description=self.bot.warnEmojiDesc, color=self.bot.warnColor)
+                            await ctx.author.send(embed=embed)
+                            return -2
+                        elif str(payload.emoji) == gamemode_emoji[i]:
+                            gamemode = gamemodes[i]
+                            await msg.delete()
+                            break
+                        i += 1
 
                     #Save it to list
                     await modifymatchmaking(qType, gamemode, isModifying)
@@ -154,7 +157,7 @@ class Matchmaking(commands.Cog):
                 try:
                     payload = await self.bot.wait_for('raw_reaction_add', timeout=300.0, check=playercountcheck)
                     i = 0
-                    playernum = "[DefaultCount] If you see this, something is very wrong..." #kek
+                    playernum = "Default"
                     #Check if emoj is invalid, otherwise check for match & break on match
                     while i != len(playersOptions):
                         if str(payload.emoji) not in playersEmoji :
@@ -528,7 +531,7 @@ class Matchmaking(commands.Cog):
     async def matchmaking_error(self, ctx, error):
         #Due to it's performance requirements and complexity, this command is limited to 1 per user
         if isinstance(error, commands.MaxConcurrencyReached):
-            embed = discord.Embed(title="❌ " + self._("Error: Max concurrency reached!"), description=self._("You already have a matchmaking request in progress."), color=self.bot.errorColor)
+            embed = discord.Embed(title=self.bot.errorMaxConcurrencyReachedTitle, description=self._("You already have a matchmaking request in progress."), color=self.bot.errorColor)
             embed.set_footer(text=self.bot.requestFooter.format(user_name=ctx.author.name, discrim=ctx.author.discriminator), icon_url=ctx.author.avatar_url)
             await ctx.channel.send(embed=embed)
             logging.info(f"{ctx.author} exceeded max concurrency for matchmaking command.")
